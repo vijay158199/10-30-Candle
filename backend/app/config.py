@@ -59,7 +59,13 @@ class Settings(BaseSettings):
     # without real displacement doesn't count as a break.
     require_displacement_candle: bool = True
     displacement_lookback_bars: int = 20       # prior 5m bars used for the average-body baseline
-    displacement_body_multiplier: float = 1.5  # breaking candle's body must be >= this x that average
+    # Breaking candle's body must be >= this x the recent-average body.
+    # Raised from 1.5 to 3.0 (2026-08-29): backtested against 1.2-4.0 on 60
+    # days of real data - 3.0 gave the best win rate (45.9% vs 41.9%) and net
+    # points (+161.4 vs +110.0), trading off ~14% fewer signals and a higher
+    # max drawdown (70 vs 50pts). Going past 3.0 (tried 3.5, 4.0) overshoots -
+    # too few signals survive and results degrade again.
+    displacement_body_multiplier: float = 3.0
 
     # --- Risk management -------------------------------------------------
     # Fixed-point SL/TP (explicit user spec, 2026-08-29, changed from the

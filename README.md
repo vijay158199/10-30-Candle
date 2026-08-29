@@ -102,7 +102,7 @@ in `backend/`. Key ones:
 | `swing_start_time` | 10:30 | Only 5m candles at/after this wall-clock time are watched for swings/breaks |
 | `swing_fractal_window` | 2 | Bars either side to confirm a fractal swing point on the 5m chart |
 | `require_displacement_candle` | True | Requires the breaking candle to have a long body (strong displacement) |
-| `displacement_body_multiplier` | 1.5 | Breaking candle's body must be >= this x the recent average |
+| `displacement_body_multiplier` | 3.0 | Breaking candle's body must be >= this x the recent average |
 | `stop_loss_points` / `take_profit_points` | 10 / 20 | Fixed risk management from entry (a 1:2 R:R) |
 | `account_capital` | 100000 | Used with `risk_pct_per_trade` to size positions |
 | `risk_pct_per_trade` | 1.0 | % of capital risked per trade |
@@ -115,8 +115,20 @@ in `backend/`. Key ones:
 The engine was smoke-tested against real recent NIFTY data (not just synthetic fixtures), through the
 actual live/backtest code paths, not a scratch script. Two risk models were tried on the same 60-day
 window: SL derived from the breaking candle's own range (26.8% win / -82.8 net pts / 41 trades / 286.8pt
-max drawdown) vs. the current fixed 10/20-point model (41.9% win / +110.0 net pts / 43 trades / 50.0pt
-max drawdown) - the fixed-point version won clearly on every metric and is the default.
+max drawdown) vs. the fixed 10/20-point model (41.9% win / +110.0 net pts / 43 trades / 50.0pt
+max drawdown) - the fixed-point version won clearly on every metric.
+
+Two alternate stop-loss placements (breakout candle's own low/high, and the broken swing level itself,
+both with TP re-derived as 2x that wider SL distance) were also tried and both lost on every metric to
+the fixed 10pt SL - wider structural stops meant a farther TP to reach, which cut win rate sharply
+(27.9% and 25.6% respectively) despite unchanged 1:2 R:R.
+
+A parameter sweep over `swing_fractal_window` (1-4), `displacement_body_multiplier` (1.2-4.0), and
+`swing_start_time` (09:30-11:30) on the same 60-day window found that raising the displacement
+multiplier from 1.5 to 3.0 - filtering out marginal, low-conviction breaks - improved results on every
+metric (45.9% win / +161.4 net pts, vs 41.9% / +110.0 at 1.5), at the cost of ~14% fewer signals (37
+trades vs 43) and a higher max drawdown (70pt vs 50pt). This is now the default. Multipliers beyond 3.0
+(3.5, 4.0) overshoot - too few signals survive and results degrade again.
 
 ## Future Enhancements (not built, by design - out of scope for a first version)
 
