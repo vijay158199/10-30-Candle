@@ -128,6 +128,18 @@ class Settings(BaseSettings):
 settings = Settings()
 settings.ensure_dirs()
 
+# Backtest-page-only risk presets (the live monitor always uses
+# stop_loss_points/take_profit_points above - these never change that).
+# Added 2026-08-30: a grid search found SL=15/TP=12 beats the live default
+# on win rate, net points, AND drawdown simultaneously (wider stop survives
+# 5m noise instead of getting clipped early; closer target is reached
+# faster) - user wanted to compare both from the Backtest page before
+# deciding whether to make it the new live default.
+BACKTEST_RISK_PROFILES: dict[str, dict] = {
+    "current": {"label": "Current live (SL=10, TP=20)", "sl": 10.0, "tp": 20.0},
+    "new": {"label": "New (SL=15, TP=12)", "sl": 15.0, "tp": 12.0},
+}
+
 
 def get_session_secret() -> str:
     """A signing key for the login session cookie. Persisted to a local file

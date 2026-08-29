@@ -34,11 +34,19 @@ def run_day(
     symbol: str = settings.primary_symbol,
     symbol_label: str = settings.primary_label,
     reduced_resolution: bool = False,
+    stop_loss_points: float | None = None,
+    take_profit_points: float | None = None,
 ) -> TradeResult:
     """Runs the full pipeline for one session and returns a single
     TradeResult (possibly with status NO_SETUP if nothing qualified).
     `candles_5m` should cover the full session (or as much of it as is
-    available so far, for a live poll)."""
+    available so far, for a live poll).
+
+    `stop_loss_points`/`take_profit_points` override settings.stop_loss_points/
+    take_profit_points for this call only - used by the Backtest page's risk
+    profile selector (see config.BACKTEST_RISK_PROFILES) to compare presets
+    without touching the live monitor's default, which always calls this
+    without them."""
     result = TradeResult(trade_date=trade_date, symbol=symbol, symbol_label=symbol_label,
                           reduced_resolution=reduced_resolution)
 
@@ -83,8 +91,8 @@ def run_day(
     )
 
     # --- Stage 3: risk - fixed SL/TP points from entry ------------------------
-    sl_points = settings.stop_loss_points
-    tp_points = settings.take_profit_points
+    sl_points = stop_loss_points if stop_loss_points is not None else settings.stop_loss_points
+    tp_points = take_profit_points if take_profit_points is not None else settings.take_profit_points
     if structure_event.direction is Direction.BUY:
         stop_loss = entry_price - sl_points
         take_profit = entry_price + tp_points

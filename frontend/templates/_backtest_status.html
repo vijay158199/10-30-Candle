@@ -17,7 +17,7 @@
 {% elif status == "DONE" %}
 <div class="card" id="backtest-status">
   <div class="card-body" style="display:flex; align-items:center; justify-content:space-between; gap: 12px; flex-wrap: wrap;">
-    <div class="pill good"><span class="pill-dot"></span>Backtest #{{ run_id }} complete &mdash; {{ run.total_trades }} trades, {{ "%.1f"|format(run.win_rate_pct) }}% win rate</div>
+    <div class="pill good"><span class="pill-dot"></span>Backtest #{{ run_id }} complete (SL{{ "%g"|format(run.stop_loss_points or 10) }}/TP{{ "%g"|format(run.take_profit_points or 20) }}) &mdash; {{ run.total_trades }} trades, {{ "%.1f"|format(run.win_rate_pct) }}% win rate</div>
     <a class="btn primary" href="/backtest/{{ run_id }}">View Results &rarr;</a>
   </div>
 </div>

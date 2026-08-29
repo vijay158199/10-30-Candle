@@ -28,11 +28,17 @@ def run_backtest(
     generate_snapshots: bool = True,
     progress_cb: ProgressCallback | None = None,
     existing_run_id: int | None = None,
+    stop_loss_points: float | None = None,
+    take_profit_points: float | None = None,
 ) -> int:
     """`existing_run_id`: pass this when the caller (e.g. the dashboard route)
     already created the BacktestRun row itself - e.g. to have an id to show
     a "running" status page against immediately - so this function reuses it
-    instead of creating a duplicate."""
+    instead of creating a duplicate.
+
+    `stop_loss_points`/`take_profit_points`: the Backtest page's risk profile
+    selector (config.BACKTEST_RISK_PROFILES) - passed straight through to
+    run_day for every day. Leave as None to use the live settings default."""
     if existing_run_id is not None:
         run_id = existing_run_id
     else:
@@ -60,6 +66,8 @@ def run_backtest(
                     symbol=symbol,
                     symbol_label=symbol_label,
                     reduced_resolution=sd_primary.reduced_resolution,
+                    stop_loss_points=stop_loss_points,
+                    take_profit_points=take_profit_points,
                 )
 
                 row = trade_result_to_row(result, source="backtest", backtest_run_id=run_id)

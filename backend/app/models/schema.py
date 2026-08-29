@@ -102,6 +102,13 @@ class BacktestRun(Base):
     start_date: Mapped[dt.date] = mapped_column(DateTime)
     end_date: Mapped[dt.date] = mapped_column(DateTime)
     structure_interval: Mapped[str] = mapped_column(String(4), default="5m")  # always "5m" for this strategy - recorded for the record, not selectable
+    # Which Backtest-page risk preset this run used - see
+    # config.BACKTEST_RISK_PROFILES. "current" | "new". Does not affect the
+    # live monitor, which always uses config.settings.stop_loss_points/
+    # take_profit_points regardless of what's been run here.
+    risk_profile: Mapped[str] = mapped_column(String(16), default="current")
+    stop_loss_points: Mapped[float] = mapped_column(Float, default=10.0)
+    take_profit_points: Mapped[float] = mapped_column(Float, default=20.0)
     status: Mapped[str] = mapped_column(String(16), default="RUNNING")  # RUNNING|DONE|FAILED
     total_trades: Mapped[int] = mapped_column(Integer, default=0)
     winning_trades: Mapped[int] = mapped_column(Integer, default=0)

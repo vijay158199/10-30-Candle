@@ -14,7 +14,7 @@ from fastapi.templating import Jinja2Templates
 from app.api import queries
 from app.auth import SESSION_KEY, verify_credentials
 from app.backtest.runner import run_backtest
-from app.config import BACKEND_DIR, settings
+from app.config import BACKEND_DIR, BACKTEST_RISK_PROFILES, settings
 from app.data.calendar import is_trading_day, now_ist, trading_days
 from app.data.fetcher import get_session_data
 from app.live import control as live_control
@@ -203,6 +203,7 @@ def backtest_page(request: Request):
         "request": request,
         **_nav_ctx("backtest"),
         "runs": runs,
+        "risk_profiles": BACKTEST_RISK_PROFILES,
         "default_start": (now_ist().date() - dt.timedelta(days=settings.backtest_lookback_days)).isoformat(),
         "default_end": now_ist().date().isoformat(),
     }
@@ -218,19 +219,33 @@ def _progress_cb(run_id: int):
 
 
 @router.post("/backtest/run", response_class=HTMLResponse)
-def start_backtest(request: Request, start_date: str = Form(...), end_date: str = Form(...)):
+def start_backtest(
+    request: Request,
+    start_date: str = Form(...),
+    end_date: str = Form(...),
+    risk_profile: str = Form("current"),
+):
     start = dt.date.fromisoformat(start_date)
     end = dt.date.fromisoformat(end_date)
+    if risk_profile not in BACKTEST_RISK_PROFILES:
+        risk_profile = "current"
+    profile = BACKTEST_RISK_PROFILES[risk_profile]
 
     with get_session() as session:
-        run = BacktestRun(start_date=start, end_date=end, status="RUNNING", structure_interval="5m")
+        run = BacktestRun(
+            start_date=start, end_date=end, status="RUNNING", structure_interval="5m",
+            risk_profile=risk_profile, stop_loss_points=profile["sl"], take_profit_points=profile["tp"],
+        )
         session.add(run)
         session.flush()
         run_id = run.id
 
     def _job():
         try:
-            run_backtest(start, end, progress_cb=_progress_cb(run_id), existing_run_id=run_id)
+            run_backtest(
+                start, end, progress_cb=_progress_cb(run_id), existing_run_id=run_id,
+                stop_loss_points=profile["sl"], take_profit_points=profile["tp"],
+            )
         except Exception:
             pass
 

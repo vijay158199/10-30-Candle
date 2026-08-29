@@ -40,6 +40,27 @@ logger = logging.getLogger("nifty_strategy")
 
 def init_db() -> None:
     Base.metadata.create_all(engine)
+    _migrate_backtest_run_risk_columns()
+
+
+def _migrate_backtest_run_risk_columns() -> None:
+    """create_all() only creates missing TABLES, not missing columns on
+    tables that already exist - the production DB already had backtest_runs
+    before risk_profile/stop_loss_points/take_profit_points were added
+    (2026-08-30), so a fresh SQLite/libSQL-compatible ALTER TABLE is needed
+    to backfill them on existing deployments. Idempotent: skips columns that
+    are already there (a from-scratch DB gets them from create_all instead
+    and this is a no-op)."""
+    with engine.connect() as conn:
+        existing = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(backtest_runs)")}
+        for col, ddl in (
+            ("risk_profile", "ALTER TABLE backtest_runs ADD COLUMN risk_profile VARCHAR(16) DEFAULT 'current'"),
+            ("stop_loss_points", "ALTER TABLE backtest_runs ADD COLUMN stop_loss_points FLOAT DEFAULT 10.0"),
+            ("take_profit_points", "ALTER TABLE backtest_runs ADD COLUMN take_profit_points FLOAT DEFAULT 20.0"),
+        ):
+            if col not in existing:
+                conn.exec_driver_sql(ddl)
+        conn.commit()
 
 
 @contextmanager
