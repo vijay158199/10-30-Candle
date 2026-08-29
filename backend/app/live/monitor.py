@@ -1,0 +1,155 @@
+"""Live signal monitor: polls Yahoo during market hours, runs the same
+`engine.run_day` pipeline used by the backtester on the day's candles so far,
+and persists/updates the day's Trade row as the setup progresses. This is a
+paper/signal system only - it never places real broker orders.
+"""
+from __future__ import annotations
+
+import datetime as dt
+
+from sqlalchemy import select
+
+from app.config import settings
+from app.data import calendar
+from app.data.fetcher import get_session_data
+from app.models.db import get_session, log_event
+from app.models.schema import LiveHeartbeat, Trade
+from app.reports import charts, excel as excel_reports
+from app.strategy.engine import run_day
+from app.strategy.mapping import trade_result_to_row
+from app.strategy.types import TradeStatus
+
+_TERMINAL_STATUSES = {
+    TradeStatus.TARGET_HIT.value,
+    TradeStatus.STOP_HIT.value,
+    TradeStatus.MANUAL_EXIT.value,
+    TradeStatus.NO_SETUP.value,
+}
+
+
+def _day_bounds(trade_date: dt.date) -> tuple[dt.datetime, dt.datetime]:
+    """Full-day range as real datetimes, not a bare date. An exact equality
+    comparison (Trade.trade_date == some_date) was found to silently never
+    match against the DateTime column on the deployed (Turso/libsql) DB -
+    every single poll inserted a fresh row instead of updating the existing
+    one, producing 169 duplicate rows for one day. A range comparison with
+    unambiguous datetime bounds sidesteps whatever date/datetime coercion
+    difference caused that, on any backend."""
+    start = dt.datetime.combine(trade_date, dt.time.min)
+    end = dt.datetime.combine(trade_date, dt.time.max)
+    return start, end
+
+
+def _upsert_today_trade(row: dict, trade_date: dt.date) -> None:
+    """There is at most one Trade row per (source="live", trade_date) - it
+    gets replaced as the day's setup evolves (NO_SETUP -> AWAITING_ENTRY ->
+    OPEN -> TARGET_HIT/STOP_HIT/MANUAL_EXIT). Self-healing: if more than one
+    row is somehow already present for the day (e.g. leftover duplicates
+    from before this fix), keeps only the newest and deletes the rest
+    instead of erroring."""
+    start, end = _day_bounds(trade_date)
+    with get_session() as session:
+        matches = session.execute(
+            select(Trade)
+            .where(Trade.source == "live", Trade.trade_date >= start, Trade.trade_date <= end)
+            .order_by(Trade.id.desc())
+        ).scalars().all()
+        if not matches:
+            session.add(Trade(**row))
+            return
+        existing, *stale = matches
+        for key, value in row.items():
+            setattr(existing, key, value)
+        for extra in stale:
+            session.delete(extra)
+
+
+def _record_heartbeat(trade_date: dt.date, status: str, detail: str | None = None) -> None:
+    start, end = _day_bounds(trade_date)
+    with get_session() as session:
+        matches = session.execute(
+            select(LiveHeartbeat)
+            .where(LiveHeartbeat.trade_date >= start, LiveHeartbeat.trade_date <= end)
+            .order_by(LiveHeartbeat.id.desc())
+        ).scalars().all()
+        now = dt.datetime.utcnow()
+        if not matches:
+            session.add(LiveHeartbeat(trade_date=trade_date, last_poll_at=now, status=status, detail=detail))
+            return
+        existing, *stale = matches
+        existing.last_poll_at = now
+        existing.status = status
+        existing.detail = detail
+        for extra in stale:
+            session.delete(extra)
+
+
+def poll_once(trade_date: dt.date | None = None) -> dict:
+    """Fetches the latest candles for the session so far and re-runs the
+    engine. Safe to call repeatedly (idempotent upsert) - this is what both
+    the scheduler's periodic job and a manual "refresh now" dashboard action
+    call."""
+    trade_date = trade_date or calendar.now_ist().date()
+
+    try:
+        sd_primary = get_session_data(settings.primary_symbol, trade_date, structure_interval="5m")
+
+        if sd_primary.fine.empty:
+            _record_heartbeat(trade_date, "RUNNING", "Waiting for candle data...")
+            return {"status": "waiting_for_data"}
+
+        result = run_day(
+            trade_date,
+            sd_primary.fine,
+            reduced_resolution=sd_primary.reduced_resolution,
+        )
+
+        row = trade_result_to_row(result, source="live")
+
+        if result.entry is not None and result.status.value in _TERMINAL_STATUSES:
+            try:
+                row["snapshot_path"] = charts.render_trade_snapshot(result, sd_primary.fine)
+            except Exception as exc:  # noqa: BLE001
+                log_event("WARNING", "live.monitor", f"Snapshot render failed: {exc}")
+
+        _upsert_today_trade(row, trade_date)
+        _record_heartbeat(trade_date, "RUNNING", f"status={result.status.value}")
+
+        return {"status": result.status.value, "direction": row.get("direction"), "entry_type": row.get("entry_type")}
+
+    except Exception as exc:  # noqa: BLE001 - never let a poll failure kill the scheduler loop
+        log_event("ERROR", "live.monitor", f"poll_once failed for {trade_date}: {exc}")
+        _record_heartbeat(trade_date, "ERROR", str(exc))
+        return {"status": "error", "detail": str(exc)}
+
+
+def finalize_daily_report(trade_date: dt.date | None = None) -> str | None:
+    """Runs a final poll, then writes the day's Excel monitoring sheet.
+    Called by the 17:00 IST scheduler job (also safe to call manually)."""
+    trade_date = trade_date or calendar.now_ist().date()
+
+    if not calendar.is_trading_day(trade_date):
+        log_event("INFO", "live.monitor", f"{trade_date} is not a trading day; skipping daily report.")
+        return None
+
+    poll_once(trade_date)
+
+    start, end = _day_bounds(trade_date)
+    with get_session() as session:
+        trades = session.execute(
+            select(Trade).where(Trade.source == "live", Trade.trade_date >= start, Trade.trade_date <= end)
+        ).scalars().all()
+        rows = [
+            {c.name: getattr(t, c.name) for c in t.__table__.columns}
+            for t in trades
+        ]
+
+    report_path = excel_reports.write_daily_sheet(rows, trade_date)
+    _record_heartbeat(trade_date, "RUNNING", f"Daily report finalized: {report_path.name}")
+    log_event("INFO", "live.monitor", f"Daily report written to {report_path}")
+    return str(report_path)
+
+
+def stop_session(trade_date: dt.date | None = None) -> None:
+    trade_date = trade_date or calendar.now_ist().date()
+    _record_heartbeat(trade_date, "STOPPED", "Session ended (market close).")

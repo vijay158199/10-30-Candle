@@ -1,0 +1,252 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Overview{% endblock %}
+{% block page_title %}Overview{% endblock %}
+
+{% block content %}
+<div class="tile-grid">
+  <div class="tile">
+    <div class="tile-label">Today's Setup</div>
+    {% if today_trade %}
+      <div class="tile-value" style="font-size: 16px;">{{ m.status_pill(today_trade.status) }}</div>
+      <div class="tile-sub">{{ today_trade.direction or "-" }} &middot; {{ today_trade.entry_type or "no entry yet" }}</div>
+    {% else %}
+      <div class="tile-value" style="font-size: 16px;"><span class="pill neutral"><span class="pill-dot"></span>No data yet</span></div>
+      <div class="tile-sub">Waiting for today's session.</div>
+    {% endif %}
+  </div>
+
+  <div class="tile">
+    <div class="tile-label">Today's P/L</div>
+    {% if today_trade and today_trade.pnl_points is not none %}
+      <div class="tile-value {{ 'good' if today_trade.pnl_points > 0 else ('critical' if today_trade.pnl_points < 0 else '') }}">
+        {{ "%+.1f"|format(today_trade.pnl_points) }} pts
+      </div>
+      <div class="tile-sub num">&#8377;{{ "%.0f"|format(today_trade.pnl_amount or 0) }}</div>
+    {% else %}
+      <div class="tile-value">&mdash;</div>
+      <div class="tile-sub">No resolved trade yet today.</div>
+    {% endif %}
+  </div>
+
+  <div class="tile">
+    <div class="tile-label">Win Rate (All-Time Live)</div>
+    <div class="tile-value">{{ "%.1f"|format(stats.win_rate_pct) }}%</div>
+    <div class="tile-sub">{{ stats.winning_trades }}W / {{ stats.losing_trades }}L of {{ stats.total_trades }} trades</div>
+  </div>
+
+  <div class="tile">
+    <div class="tile-label">Net P/L (All-Time Live)</div>
+    <div class="tile-value {{ 'good' if stats.net_profit_points > 0 else ('critical' if stats.net_profit_points < 0 else '') }}">
+      {{ "%+.1f"|format(stats.net_profit_points) }} pts
+    </div>
+    <div class="tile-sub num">&#8377;{{ "%.0f"|format(stats.net_profit_amount) }}</div>
+  </div>
+
+  <div class="tile">
+    <div class="tile-label">Monitor Status</div>
+    {% if live_status.is_active_today %}
+      {% if heartbeat and heartbeat.status == 'ERROR' %}
+        <div class="tile-value" style="font-size: 16px;"><span class="pill critical"><span class="pill-dot"></span>Error</span></div>
+      {% else %}
+        <div class="tile-value" style="font-size: 16px;"><span class="pill good"><span class="pill-dot"></span>Live</span></div>
+      {% endif %}
+      {% if heartbeat %}<div class="tile-sub">Last poll {{ heartbeat.last_poll_at.strftime('%H:%M:%S') }} IST</div>{% endif %}
+    {% else %}
+      <div class="tile-value" style="font-size: 16px;"><span class="pill neutral"><span class="pill-dot"></span>Not Started</span></div>
+      <div class="tile-sub">Click Start below to begin today's session.</div>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <div>
+      <h2>Today's Setup Pipeline</h2>
+      <div class="card-sub">Where today's analysis actually stands, stage by stage</div>
+    </div>
+  </div>
+  <div class="card-body">
+    <div class="pipeline">
+      <div class="pipeline-stage {{ 'done' if pipeline.reached >= 1 else ('current' if pipeline.reached == 0 else 'pending') }}">
+        <div class="pipeline-num">1</div>
+        <div class="pipeline-label">Swing Break</div>
+        {% if pipeline.structure %}
+          <div class="pipeline-value">{{ pipeline.structure.type }} {{ (pipeline.structure.side or "").title() }} &middot; {{ pipeline.structure.bias or "-" }}</div>
+          <div class="pipeline-detail">Broke at {{ pipeline.structure.time.strftime('%H:%M') if pipeline.structure.time else "-" }}</div>
+        {% else %}
+          <div class="pipeline-value">Not yet</div>
+          <div class="pipeline-detail">Watching for a 5m close beyond the tracked swing high/low, at/after {{ settings.swing_start_time }}</div>
+        {% endif %}
+      </div>
+      <div class="pipeline-arrow">&rarr;</div>
+      <div class="pipeline-stage {{ 'done' if pipeline.reached >= 2 else ('current' if pipeline.reached == 1 else 'pending') }}">
+        <div class="pipeline-num">2</div>
+        <div class="pipeline-label">Entry</div>
+        {% if pipeline.entry %}
+          <div class="pipeline-value">{{ pipeline.entry.type }} @ {{ "%.1f"|format(pipeline.entry.price) if pipeline.entry.price is not none else "-" }}</div>
+          <div class="pipeline-detail">
+            TP {{ "%.1f"|format(pipeline.entry.target) if pipeline.entry.target is not none else "-" }}
+            &middot; SL {{ "%.1f"|format(pipeline.entry.stop_loss) if pipeline.entry.stop_loss is not none else "-" }}
+          </div>
+        {% else %}
+          <div class="pipeline-value">Not yet</div>
+        {% endif %}
+      </div>
+      <div class="pipeline-arrow">&rarr;</div>
+      <div class="pipeline-stage {{ 'done' if pipeline.reached >= 3 else ('current' if pipeline.reached == 2 else 'pending') }}">
+        <div class="pipeline-num">3</div>
+        <div class="pipeline-label">Outcome</div>
+        {% if pipeline.outcome %}
+          <div class="pipeline-value">{{ pipeline.outcome.hit }} &middot; <span style="color: var({{ '--status-good' if pipeline.outcome.result == 'Win' else '--status-critical' }}); font-weight: 600;">{{ pipeline.outcome.result }}</span></div>
+          <div class="pipeline-detail">{{ m.status_pill(pipeline.outcome.status) }} &middot; {{ m.pnl_span(pipeline.outcome.pnl_points) }} pts</div>
+        {% elif pipeline.reached == 2 %}
+          <div class="pipeline-value">{{ m.status_pill(today_trade.status) }}</div>
+        {% else %}
+          <div class="pipeline-value">Not yet</div>
+        {% endif %}
+      </div>
+    </div>
+    {% if pipeline.summary %}
+    <div class="note" style="margin-top: 14px;"><strong>Today's trading, in one line:</strong> {{ pipeline.summary }}</div>
+    {% endif %}
+    {% if pipeline.notes %}
+    <div class="note" style="margin-top: 8px;"><strong>Why it stopped here:</strong> {{ pipeline.notes }}</div>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <div>
+      <h2>Today's Live Chart</h2>
+      <div class="card-sub">{{ settings.primary_label }} session so far &middot; auto-refreshes every 60s</div>
+    </div>
+  </div>
+  <div class="card-body" style="text-align: center;">
+    <img id="live-chart-img" src="/api/live/chart.png" alt="Today's live chart"
+         style="max-width: 100%; border-radius: 8px;"
+         onload="this.style.display='block'; document.getElementById('live-chart-empty').style.display='none';"
+         onerror="this.style.display='none'; document.getElementById('live-chart-empty').style.display='block';">
+    <div id="live-chart-empty" class="empty-state" style="display: none;">
+      No chart data yet for today's session.
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <div>
+      <h2>Live Monitor Control</h2>
+      <div class="card-sub">
+        {% if live_status.is_active_today %}
+          Armed for today &middot; polling automatically every {{ settings.poll_interval_seconds }}s during 09:15&ndash;15:30 IST.
+        {% else %}
+          Not started today. Starting arms the live monitor for the rest of today's 09:15&ndash;15:30 IST session &mdash; it resumes automatically tomorrow only after you click Start again.
+        {% endif %}
+      </div>
+    </div>
+    {% if live_status.is_active_today %}
+      <button class="btn danger" hx-post="/api/live/stop" hx-swap="none" hx-on::after-request="window.location.reload()">Stop</button>
+    {% else %}
+      <button class="btn primary" hx-post="/api/live/start" hx-swap="none" hx-on::after-request="window.location.reload()">Start Live Monitoring</button>
+    {% endif %}
+  </div>
+  <div class="card-body">
+    <div class="tile-sub">
+      Fixed 5-minute candles, watching for a swing break at/after {{ settings.swing_start_time }} IST every session -
+      nothing to configure here.
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <div>
+      <h2>Equity Curve</h2>
+      <div class="card-sub">Cumulative points across resolved live trades</div>
+    </div>
+    <button class="btn" hx-post="/api/live/poll" hx-swap="none" hx-on::after-request="window.location.reload()" title="Poll now">Refresh Now</button>
+  </div>
+  <div class="chart-wrap"><canvas id="equityChart"></canvas></div>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <div>
+      <h2>Recent Trades</h2>
+      <div class="card-sub">Latest live-monitored sessions</div>
+    </div>
+    <a class="btn" href="/trades">View all &rarr;</a>
+  </div>
+  <div class="card-body flush table-scroll">
+    {% if recent_trades %}
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Date</th><th>Direction</th><th>Entry Type</th><th>Entry</th><th>Exit</th>
+          <th class="num">P/L (pts)</th><th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in recent_trades %}
+        <tr>
+          <td>{{ t.trade_date.strftime('%d %b %Y') }}</td>
+          <td>{{ m.direction_badge(t.direction) }}</td>
+          <td>{{ t.entry_type or "-" }}</td>
+          <td class="num">{{ "%.1f"|format(t.entry_price) if t.entry_price else "-" }}</td>
+          <td class="num">{{ "%.1f"|format(t.exit_price) if t.exit_price else "-" }}</td>
+          <td class="num">{{ m.pnl_span(t.pnl_points) }}</td>
+          <td>{{ m.status_pill(t.status) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty-state">No live trades recorded yet. Click "Start Live Monitoring" above to begin monitoring during market hours (09:15&ndash;15:30 IST).</div>
+    {% endif %}
+  </div>
+</div>
+
+<script>
+  (function () {
+    const img = document.getElementById('live-chart-img');
+    setInterval(function () {
+      img.src = '/api/live/chart.png?t=' + Date.now();
+    }, 60000);
+  })();
+
+  const eqData = {{ equity_curve | tojson }};
+  const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const styles = getComputedStyle(document.documentElement);
+  const good = styles.getPropertyValue('--status-good').trim();
+  const grid = styles.getPropertyValue('--grid-line').trim();
+  const ink = styles.getPropertyValue('--text-secondary').trim();
+
+  new Chart(document.getElementById('equityChart'), {
+    type: 'line',
+    data: {
+      labels: eqData.map(d => d.date),
+      datasets: [{
+        label: 'Cumulative Points',
+        data: eqData.map(d => d.equity),
+        borderColor: good,
+        backgroundColor: good + '22',
+        fill: true,
+        tension: 0.15,
+        pointRadius: 0,
+        pointHoverRadius: 4,
+        borderWidth: 2,
+      }]
+    },
+    options: {
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { grid: { color: grid }, ticks: { color: ink, maxTicksLimit: 8 } },
+        y: { grid: { color: grid }, ticks: { color: ink } },
+      }
+    }
+  });
+</script>
+{% endblock %}
