@@ -1,0 +1,46 @@
+{% if state == "RUNNING" %}
+<div class="card" id="snapshot-regen-status" hx-get="/logs/regenerate-snapshots/status" hx-trigger="every 1.5s" hx-swap="outerHTML">
+  <div class="card-body">
+    <div class="pill info"><span class="pill-dot"></span>Regenerating snapshots&hellip;</div>
+    {% if total %}
+    <div style="margin-top:10px; font-size: 12.5px; color: var(--text-secondary);">{{ current }} / {{ total }} trades</div>
+    <div style="margin-top:6px; height:6px; background: var(--surface-2); border-radius: 3px; overflow:hidden;">
+      <div style="height:100%; width: {{ (current / total * 100) if total else 0 }}%; background: var(--accent);"></div>
+    </div>
+    {% else %}
+    <div style="margin-top:10px; font-size: 12.5px; color: var(--text-secondary);">Loading trade list&hellip;</div>
+    {% endif %}
+  </div>
+</div>
+{% elif state == "DONE" %}
+<div class="card" id="snapshot-regen-status">
+  <div class="card-body" style="display:flex; align-items:center; justify-content:space-between; gap: 12px; flex-wrap: wrap;">
+    <div class="pill good"><span class="pill-dot"></span>Done &mdash; {{ regenerated }} of {{ total }} snapshot(s) regenerated{% if failed %}, {{ failed }} failed{% endif %}{% if skipped_no_data %}, {{ skipped_no_data }} skipped (no candle data){% endif %}.</div>
+    <form hx-post="/logs/regenerate-snapshots" hx-target="#snapshot-regen-status" hx-swap="outerHTML">
+      <button class="btn" type="submit">Run Again</button>
+    </form>
+  </div>
+</div>
+{% elif state == "FAILED" %}
+<div class="card" id="snapshot-regen-status">
+  <div class="card-body">
+    <div class="pill critical"><span class="pill-dot"></span>Regeneration failed</div>
+    {% if error %}<div class="note" style="margin-top:10px;">{{ error }}</div>{% endif %}
+    <form hx-post="/logs/regenerate-snapshots" hx-target="#snapshot-regen-status" hx-swap="outerHTML" style="margin-top:10px;">
+      <button class="btn" type="submit">Try Again</button>
+    </form>
+  </div>
+</div>
+{% else %}
+<div class="card" id="snapshot-regen-status">
+  <div class="card-body" style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+    <div>
+      <div style="font-weight:600;">Trade Snapshot Repair</div>
+      <div class="tile-sub" style="margin-top:4px;">Re-renders every trade's chart under a collision-proof filename, from that trade's own stored numbers, so its picture can never belong to a different run again. Safe to run anytime.</div>
+    </div>
+    <form hx-post="/logs/regenerate-snapshots" hx-target="#snapshot-regen-status" hx-swap="outerHTML">
+      <button class="btn primary" type="submit">Regenerate All Snapshots</button>
+    </form>
+  </div>
+</div>
+{% endif %}

@@ -36,6 +36,11 @@ templates = Jinja2Templates(directory=str(BACKEND_DIR.parent / "frontend" / "tem
 _backtest_progress: dict[int, dict] = {}
 _backtest_lock = threading.Lock()
 
+# Single global job (not per-run - it walks every trade in the DB at once).
+# {"state": "IDLE"|"RUNNING"|"DONE"|"FAILED", ...} - in-memory, single-process.
+_snapshot_regen_status: dict = {"state": "IDLE"}
+_snapshot_regen_lock = threading.Lock()
+
 
 @auth_router.get("/login", response_class=HTMLResponse)
 def login_page(request: Request, next: str = "/"):
@@ -462,8 +467,55 @@ def logs_page(request: Request):
     if scheduler:
         for job in scheduler.get_jobs():
             jobs.append({"id": job.id, "next_run": job.next_run_time})
-    ctx = {"request": request, **_nav_ctx("logs"), "errors": errors, "heartbeat": heartbeat, "jobs": jobs}
+    with _snapshot_regen_lock:
+        snapshot_regen = dict(_snapshot_regen_status)
+    ctx = {
+        "request": request, **_nav_ctx("logs"), "errors": errors, "heartbeat": heartbeat, "jobs": jobs,
+        **snapshot_regen,
+    }
     return templates.TemplateResponse("logs.html", ctx)
+
+
+def _snapshot_regen_progress_cb(current: int, total: int) -> None:
+    with _snapshot_regen_lock:
+        _snapshot_regen_status.update({"state": "RUNNING", "current": current, "total": total})
+
+
+@router.post("/logs/regenerate-snapshots", response_class=HTMLResponse)
+def regenerate_snapshots_start(request: Request):
+    """Kicks off queries.regenerate_snapshots() in a background thread (same
+    pattern as /backtest/run - this can take a while over the full trade
+    history) - fixes every trade's snapshot chart at once rather than
+    requiring a backtest-by-backtest re-run."""
+    with _snapshot_regen_lock:
+        if _snapshot_regen_status.get("state") == "RUNNING":
+            return templates.TemplateResponse("_snapshot_regen_status.html", {"request": request, **_snapshot_regen_status})
+        _snapshot_regen_status.clear()
+        _snapshot_regen_status.update({"state": "RUNNING", "current": 0, "total": 0})
+
+    def _job():
+        try:
+            result = queries.regenerate_snapshots(progress_cb=_snapshot_regen_progress_cb)
+            with _snapshot_regen_lock:
+                _snapshot_regen_status.clear()
+                _snapshot_regen_status.update({"state": "DONE", **result})
+        except Exception as exc:  # noqa: BLE001 - surface it on the status card instead of killing the thread silently
+            with _snapshot_regen_lock:
+                _snapshot_regen_status.clear()
+                _snapshot_regen_status.update({"state": "FAILED", "error": str(exc)})
+
+    threading.Thread(target=_job, daemon=True).start()
+
+    with _snapshot_regen_lock:
+        status = dict(_snapshot_regen_status)
+    return templates.TemplateResponse("_snapshot_regen_status.html", {"request": request, **status})
+
+
+@router.get("/logs/regenerate-snapshots/status", response_class=HTMLResponse)
+def regenerate_snapshots_status(request: Request):
+    with _snapshot_regen_lock:
+        status = dict(_snapshot_regen_status)
+    return templates.TemplateResponse("_snapshot_regen_status.html", {"request": request, **status})
 
 
 @router.get("/download/report/{filename}")

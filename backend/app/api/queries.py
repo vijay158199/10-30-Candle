@@ -9,10 +9,15 @@ import os
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import desc, select
 
+from typing import Callable
+
 from app.backtest.stats import BacktestStats, compute_stats
 from app.data.calendar import now_ist
-from app.models.db import get_session
+from app.data.fetcher import get_session_data
+from app.models.db import get_session, log_event
 from app.models.schema import BacktestRun, ErrorLog, LiveHeartbeat, Trade
+from app.reports import charts
+from app.strategy.mapping import row_to_trade_result
 
 
 def _row_to_dict(t: Trade) -> dict:
@@ -341,6 +346,60 @@ def delete_backtest_run(run_id: int) -> bool:
         session.execute(sa_delete(Trade).where(Trade.backtest_run_id == run_id))
         session.delete(run)
     return True
+
+
+def regenerate_snapshots(progress_cb: Callable[[int, int], None] | None = None) -> dict:
+    """Re-renders every trade's snapshot chart under the collision-proof
+    filename scheme (charts.render_trade_snapshot's run_tag) and updates
+    each row's snapshot_path. Fixes the bug where two different runs
+    sharing one (trade_date, symbol, entry_time) key silently overwrote
+    each other's PNG on disk - a row's own pnl_points/status in the DB
+    stayed correct, but the picture next to it could belong to an entirely
+    different run (different SL/TP, different result).
+
+    Rebuilds each chart from that row's OWN already-stored numbers (see
+    mapping.row_to_trade_result) rather than re-running the strategy engine
+    - so a regenerated chart can never disagree with the row it belongs to,
+    even if strategy logic has changed since that row was first written.
+    Safe to run repeatedly (fully idempotent - always re-derives fresh from
+    the DB) and cheap enough to call after any bug affecting snapshots."""
+    with get_session() as session:
+        trades = session.execute(select(Trade).where(Trade.entry_time.is_not(None))).scalars().all()
+        rows = [_row_to_dict(t) for t in trades]
+
+    total = len(rows)
+    regenerated = 0
+    failed = 0
+    skipped_no_data = 0
+
+    for i, row in enumerate(rows, start=1):
+        if progress_cb:
+            progress_cb(i, total)
+        try:
+            day = row["trade_date"]
+            day = day.date() if isinstance(day, dt.datetime) else day
+            sd = get_session_data(row["symbol"], day, structure_interval="5m")
+            if sd.fine.empty:
+                skipped_no_data += 1
+                continue
+
+            result = row_to_trade_result(row)
+            run_tag = f"bt{row['backtest_run_id']}" if row["source"] == "backtest" and row.get("backtest_run_id") else "live"
+            new_path = charts.render_trade_snapshot(result, sd.fine, run_tag=run_tag)
+            if new_path is None:
+                failed += 1
+                continue
+
+            with get_session() as session:
+                trade = session.get(Trade, row["id"])
+                if trade is not None:
+                    trade.snapshot_path = new_path
+            regenerated += 1
+        except Exception as exc:  # noqa: BLE001 - one bad row shouldn't kill the whole batch
+            log_event("WARNING", "queries.regenerate_snapshots", f"Trade {row.get('id')}: {exc}")
+            failed += 1
+
+    return {"total": total, "regenerated": regenerated, "failed": failed, "skipped_no_data": skipped_no_data}
 
 
 # --- Trader's Journal (live trades only - a journal is about the trader's
