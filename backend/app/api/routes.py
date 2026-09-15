@@ -14,6 +14,8 @@ from fastapi.templating import Jinja2Templates
 from app.api import queries
 from app.auth import SESSION_KEY, verify_credentials
 from app.backtest.runner import run_backtest
+from app.broker import registry as broker_registry
+from app.broker import store as broker_store
 from app.config import BACKEND_DIR, BACKTEST_RISK_PROFILES, settings
 from app.data.calendar import is_trading_day, now_ist, trading_days
 from app.data.fetcher import get_session_data
@@ -196,6 +198,39 @@ def monthly_performance(request: Request):
     return templates.TemplateResponse("monthly.html", ctx)
 
 
+@router.get("/performance", response_class=HTMLResponse)
+def performance_page(request: Request, baseline: str | None = None):
+    """Track Record: the chosen backtest run's history (if any) followed by
+    every live-monitored day since, as one continuous record - combined win
+    rate, combined equity curve, and a full day-by-day trade log. Grows on
+    its own as each trading day's live poll/report finalizes (no separate
+    "append" step needed - it just re-queries the Trade table fresh on
+    every view)."""
+    done_runs = queries.get_done_backtest_runs()
+    if baseline == "none":
+        selected_id = None
+    elif baseline and baseline.isdigit():
+        selected_id = int(baseline)
+    else:
+        selected_id = done_runs[0]["id"] if done_runs else None
+
+    stats = queries.get_combined_stats(selected_id)
+    trades = queries.get_combined_trades(selected_id)
+    equity_curve, backtest_points = queries.get_combined_equity_curve(selected_id)
+
+    ctx = {
+        "request": request,
+        **_nav_ctx("performance"),
+        "runs": done_runs,
+        "selected_run_id": selected_id,
+        "stats": stats,
+        "trades": list(reversed(trades)),
+        "equity_curve": equity_curve,
+        "backtest_points": backtest_points,
+    }
+    return templates.TemplateResponse("performance.html", ctx)
+
+
 @router.get("/backtest", response_class=HTMLResponse)
 def backtest_page(request: Request):
     runs = queries.get_backtest_runs()
@@ -280,6 +315,142 @@ def backtest_detail(request: Request, run_id: int):
     monthly = queries.get_backtest_monthly(run_id)
     ctx = {"request": request, **_nav_ctx("backtest"), "run": run, "trades": trades, "monthly": monthly}
     return templates.TemplateResponse("backtest_detail.html", ctx)
+
+
+@router.get("/journal", response_class=HTMLResponse)
+def journal_page(request: Request):
+    trades = queries.get_journal_trades()
+    analytics = queries.get_journal_analytics()
+    ctx = {
+        "request": request,
+        **_nav_ctx("journal"),
+        "trades": trades,
+        "analytics": analytics,
+    }
+    return templates.TemplateResponse("journal.html", ctx)
+
+
+@router.post("/journal/{trade_id}", response_class=HTMLResponse)
+def journal_update(
+    request: Request,
+    trade_id: int,
+    notes: str = Form(""),
+    rating: str = Form(""),
+    tags: str = Form(""),
+):
+    rating_val = int(rating) if rating.strip().isdigit() and 1 <= int(rating) <= 5 else None
+    clean_tags = ",".join(t.strip() for t in tags.split(",") if t.strip())
+    trade = queries.update_trade_journal(trade_id, notes.strip() or None, rating_val, clean_tags or None)
+    return templates.TemplateResponse("_journal_card.html", {"request": request, "t": trade})
+
+
+@router.get("/broker", response_class=HTMLResponse)
+def broker_page(request: Request):
+    """Fully opt-in broker-account connection page - nothing here affects
+    signal generation or the Yahoo Finance data feed either way. Connecting
+    an account only unlocks viewing funds/holdings and submitting orders
+    YOU fill in yourself below; nothing here is wired to the strategy's
+    own signals."""
+    accounts = broker_store.get_all_accounts()
+    brokers = []
+    for broker_id, adapter in broker_registry.SUPPORTED.items():
+        account = accounts.get(broker_id)
+        funds = holdings = None
+        fetch_error = None
+        if account and account["status"] == "CONNECTED":
+            token = broker_store.get_access_token(broker_id)
+            if token:
+                try:
+                    funds = adapter.get_funds(token)
+                except Exception as exc:  # noqa: BLE001
+                    fetch_error = str(exc)
+                try:
+                    holdings = adapter.get_holdings(token)
+                except Exception:  # noqa: BLE001 - funds error (if any) is enough to surface
+                    pass
+        brokers.append({
+            "id": broker_id, "label": adapter.display_name, "available": True,
+            "account": account, "funds": funds, "holdings": holdings, "fetch_error": fetch_error,
+        })
+    for broker_id, label in broker_registry.COMING_SOON.items():
+        brokers.append({"id": broker_id, "label": label, "available": False, "account": None})
+
+    ctx = {"request": request, **_nav_ctx("broker"), "brokers": brokers}
+    return templates.TemplateResponse("broker.html", ctx)
+
+
+@router.post("/broker/{broker_id}/connect")
+def broker_connect(
+    broker_id: str,
+    label: str = Form(""),
+    api_key: str = Form(""),
+    api_secret: str = Form(""),
+    totp_secret: str = Form(""),
+):
+    adapter = broker_registry.get_adapter(broker_id)
+    if adapter is None:
+        return RedirectResponse(url="/broker", status_code=303)
+
+    credentials = {"api_key": api_key.strip(), "api_secret": api_secret.strip(), "totp_secret": totp_secret.strip()}
+    auth_method = "totp" if credentials["totp_secret"] else "api_key_secret"
+    result = adapter.connect(credentials)
+    if result.ok and result.access_token:
+        broker_store.save_connection(broker_id, label.strip() or None, auth_method, credentials, result.access_token)
+        log_event("INFO", "broker.connect", f"{broker_id} account connected.")
+    else:
+        broker_store.mark_error(broker_id, auth_method, credentials, result.error or "Connection failed.")
+        log_event("WARNING", "broker.connect", f"{broker_id} connect failed: {result.error}")
+    return RedirectResponse(url="/broker", status_code=303)
+
+
+@router.post("/broker/{broker_id}/disconnect")
+def broker_disconnect(broker_id: str):
+    broker_store.disconnect(broker_id)
+    log_event("INFO", "broker.connect", f"{broker_id} account disconnected.")
+    return RedirectResponse(url="/broker", status_code=303)
+
+
+@router.post("/broker/{broker_id}/order", response_class=HTMLResponse)
+def broker_place_order(
+    request: Request,
+    broker_id: str,
+    symbol: str = Form(...),
+    transaction_type: str = Form(...),
+    quantity: str = Form(...),
+    exchange: str = Form("NSE"),
+    segment: str = Form("CASH"),
+    product: str = Form("CNC"),
+    order_type: str = Form("MARKET"),
+    price: str = Form(""),
+):
+    """Places a real order via the connected broker - ONLY when the user
+    fills in this form and submits it themselves (the Broker page's confirm
+    dialog makes that explicit). Never triggered automatically by a
+    strategy signal."""
+    adapter = broker_registry.get_adapter(broker_id)
+    token = broker_store.get_access_token(broker_id) if adapter else None
+    if adapter is None or token is None:
+        result_ctx = {"request": request, "ok": False, "error": "This broker isn't connected."}
+        return templates.TemplateResponse("_broker_order_result.html", result_ctx)
+
+    order = {
+        "symbol": symbol.strip().upper(),
+        "transaction_type": transaction_type,
+        "quantity": quantity.strip(),
+        "exchange": exchange,
+        "segment": segment,
+        "product": product,
+        "order_type": order_type,
+        "price": float(price) if price.strip() else None,
+    }
+    result = adapter.place_order(token, order)
+    log_event(
+        "INFO" if result.ok else "ERROR", "broker.order",
+        f"{broker_id} {order['transaction_type']} {order['quantity']} {order['symbol']}: "
+        + (f"placed, order_id={result.order_id}" if result.ok else f"failed - {result.error}"),
+    )
+    result_ctx = {"request": request, "ok": result.ok, "order_id": result.order_id, "error": result.error, "order": order}
+    return templates.TemplateResponse("_broker_order_result.html", result_ctx)
 
 
 @router.get("/logs", response_class=HTMLResponse)

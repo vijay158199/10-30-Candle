@@ -41,6 +41,7 @@ logger = logging.getLogger("nifty_strategy")
 def init_db() -> None:
     Base.metadata.create_all(engine)
     _migrate_backtest_run_risk_columns()
+    _migrate_trade_journal_columns()
 
 
 def _migrate_backtest_run_risk_columns() -> None:
@@ -57,6 +58,22 @@ def _migrate_backtest_run_risk_columns() -> None:
             ("risk_profile", "ALTER TABLE backtest_runs ADD COLUMN risk_profile VARCHAR(16) DEFAULT 'current'"),
             ("stop_loss_points", "ALTER TABLE backtest_runs ADD COLUMN stop_loss_points FLOAT DEFAULT 10.0"),
             ("take_profit_points", "ALTER TABLE backtest_runs ADD COLUMN take_profit_points FLOAT DEFAULT 20.0"),
+        ):
+            if col not in existing:
+                conn.exec_driver_sql(ddl)
+        conn.commit()
+
+
+def _migrate_trade_journal_columns() -> None:
+    """Same idempotent backfill pattern as _migrate_backtest_run_risk_columns,
+    for the Journal page's self-graded fields (2026-09-14) added to the
+    existing `trades` table."""
+    with engine.connect() as conn:
+        existing = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(trades)")}
+        for col, ddl in (
+            ("journal_notes", "ALTER TABLE trades ADD COLUMN journal_notes TEXT"),
+            ("journal_rating", "ALTER TABLE trades ADD COLUMN journal_rating INTEGER"),
+            ("journal_tags", "ALTER TABLE trades ADD COLUMN journal_tags VARCHAR(255)"),
         ):
             if col not in existing:
                 conn.exec_driver_sql(ddl)

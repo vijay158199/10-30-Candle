@@ -48,6 +48,24 @@
     </table>
     {% else %}<div class="empty-state">No resolved trades in this range.</div>{% endif %}
   </div>
+
+  <!-- TradingView Chart -->
+  <div class="chart-container mt-4">
+    <div id="tv-chart" style="height: 400px; width: 100%;"></div>
+  </div>
+
+  <!-- TradingView Chart Initialization -->
+  <script>
+    var tv = new TradingView.widget({
+      id: 'tv-chart',
+      container: 'tv-chart',
+      symbol: 'NIFTY',
+      interval: '5min',
+      theme: 'light',
+      speed: 1,
+      timePeriod: 100
+    });
+  </script>
 </div>
 
 <div class="card">

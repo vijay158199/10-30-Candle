@@ -45,9 +45,10 @@ class Settings(BaseSettings):
     # runs on 5-minute candles - no separate structure-timeframe selector
     # like the sibling projects.
     structure_interval: str = "5m"
-    # Only 5m candles at/after this wall-clock time are considered for
-    # swing tracking/breaks - "see 10:30 candle... mark previous 5min swing
-    # high and low (after 10.30)".
+    # The reference swing high/low is the fractal swing that formed and
+    # confirmed on 5m candles BEFORE this wall-clock time; candles at/after
+    # it are scanned for the first close that breaks beyond that level -
+    # "mark the swing high and low before 10:30, trade the break after it".
     swing_start_time: str = "10:30"
     # Bars either side needed to confirm a fractal swing point on the 5m
     # chart before a break can be evaluated against it.
@@ -156,3 +157,31 @@ def get_session_secret() -> str:
     secret = secrets.token_hex(32)
     secret_path.write_text(secret)
     return secret
+
+
+def get_broker_encryption_key() -> bytes:
+    """Symmetric key (Fernet-compatible, urlsafe-base64) used to encrypt
+    broker API credentials/tokens at rest in the DB - same persist-to-file
+    pattern as get_session_secret() above, but kept as a SEPARATE secret
+    (never reuse the session-signing key for data encryption) and pinnable
+    via NIFTY_BROKER_ENC_KEY for the same reason (survive a fresh volume).
+
+    Whatever the raw secret looks like (a hosting platform's auto-generated
+    env var value isn't guaranteed to already be in Fernet's exact 32-byte
+    urlsafe-base64 format), it's hashed down to one - so any string works as
+    input, deterministically, without weakening it (SHA-256 of a random
+    32-byte secret is still a strong 256-bit key)."""
+    import base64
+    import hashlib
+
+    env_secret = os.environ.get("NIFTY_BROKER_ENC_KEY")
+    if env_secret:
+        raw = env_secret
+    else:
+        key_path = DATA_DIR / ".broker_secret"
+        if key_path.exists():
+            raw = key_path.read_text().strip()
+        else:
+            raw = secrets.token_hex(32)
+            key_path.write_text(raw)
+    return base64.urlsafe_b64encode(hashlib.sha256(raw.encode("utf-8")).digest())

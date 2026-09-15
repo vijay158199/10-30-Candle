@@ -1,10 +1,11 @@
 """Orchestrates the "10:30 Candle" pipeline for a single trading day:
 
-  From settings.swing_start_time (10:30 IST) onward, track fractal swing
-  highs/lows on 5-minute candles -> the first candle to CLOSE beyond the
-  most recently confirmed swing, with real displacement (a "long body"),
-  fires the signal - direction follows the side broken (BUY on a high
-  break, SELL on a low break) (swing_break.find_swing_break)
+  The fractal swing high/low that formed and confirmed BEFORE settings.
+  swing_start_time (10:30 IST) is the fixed reference level for the day ->
+  from 10:30 onward, the first 5-minute candle to CLOSE beyond that level,
+  with real displacement (a "long body"), fires the signal - direction
+  follows the side broken (BUY on a high break, SELL on a low break)
+  (swing_break.find_swing_break)
     -> entry at the OPEN of the very next 5-minute candle
       -> risk: fixed settings.stop_loss_points/take_profit_points from
         entry (10/20 by default) - not tied to the breaking candle's own
@@ -57,18 +58,27 @@ def run_day(
 
     start_h, start_m = (int(x) for x in settings.swing_start_time.split(":"))
     cutoff = dt.datetime.combine(trade_date, dt.time(start_h, start_m))
+    before_cutoff = candles_5m[candles_5m.index < cutoff]
     onward = candles_5m[candles_5m.index >= cutoff]
     if onward.empty:
         result.status = TradeStatus.NO_SETUP
         result.notes.append(f"No 5m candles at/after {settings.swing_start_time} yet.")
         return result
+    if before_cutoff.empty:
+        result.status = TradeStatus.NO_SETUP
+        result.notes.append(f"No 5m candles before {settings.swing_start_time} to mark a swing high/low against.")
+        return result
 
-    # --- Stage 1: swing break with displacement, on/after the 10:30 cutoff ----
-    structure_event = swing_break_mod.find_swing_break(onward, settings.swing_fractal_window, len(onward))
+    # --- Stage 1: swing break with displacement, on/after the 10:30 cutoff,
+    # measured against the swing high/low that formed BEFORE the cutoff -----
+    cutoff_index = len(before_cutoff)
+    structure_event = swing_break_mod.find_swing_break(
+        candles_5m, cutoff_index, settings.swing_fractal_window, len(onward)
+    )
     if structure_event is None:
         result.status = TradeStatus.NO_SETUP
         result.notes.append(
-            f"No 5m candle closed beyond the tracked swing high/low with real displacement after {settings.swing_start_time}."
+            f"No 5m candle closed beyond the swing high/low tracked before {settings.swing_start_time} with real displacement."
         )
         return result
     result.structure = structure_event

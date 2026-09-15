@@ -34,8 +34,8 @@
       <button class="btn primary" type="submit">Run Backtest</button>
     </form>
     <div class="note" style="margin-top: 14px;">
-      Fixed 5-minute candles, watching for a swing break at/after {{ settings.swing_start_time }} IST every
-      session. 5m candles are available from Yahoo Finance for the trailing ~60 days; older days will
+      Fixed 5-minute candles: swing high/low tracked before {{ settings.swing_start_time }} IST, breakout watched for
+      from {{ settings.swing_start_time }} onward, every session. 5m candles are available from Yahoo Finance for the trailing ~60 days; older days will
       show no data for this backtest. The risk profile only affects this backtest - the live monitor
       always trades the "Current live" SL/TP regardless of what you run here.
     </div>

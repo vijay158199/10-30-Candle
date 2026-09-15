@@ -2,7 +2,12 @@
 resolution the strategy actually ran on - settings.structure_interval,
 e.g. 5m - around the entry, with entry/SL/TP marked, saves a PNG, returns
 its path) for the Excel "Screenshot or chart reference" column and the
-dashboard's Trade Log."""
+dashboard's Trade Log.
+
+Styled as a clean, dark "prop-desk" chart (same palette as the dashboard's
+own dark theme - see frontend/static/css/app.css) rather than a default
+matplotlib look, since these PNGs are also what gets shared/posted (the
+Overview page's live chart and every Trade Log thumbnail)."""
 from __future__ import annotations
 
 import datetime as dt
@@ -18,15 +23,84 @@ import pandas as pd
 from app.config import settings
 from app.strategy.types import Direction, TradeResult
 
-_STRUCTURE_COLORS = {"SWING_BREAK": "#06b6d4"}
+# --- Palette - mirrors frontend/static/css/app.css's dark theme tokens so
+# every exported chart reads as the same brand as the dashboard itself. -----
+_BG = "#0a0f1a"          # --bg (dark)
+_PANEL = "#0d1422"
+_GRID = "#1c2740"
+_TEXT = "#eef1f6"        # --text-primary (dark)
+_TEXT_MUTED = "#7c88a3"  # close to --text-muted (dark)
+_ACCENT = "#d9a548"      # --accent (dark) - brand gold, used for branding + structure marker
+_UP = "#1ecb75"          # bullish candle body
+_DOWN = "#f0454f"        # bearish candle body
+_ENTRY = "#4da3ff"       # entry line
+_SL = "#f0454f"          # stop-loss line
+_TP = "#1ecb75"          # take-profit line
+_SWING = "#8a93a3"       # pre-cutoff swing level (dotted)
+
+_STRUCTURE_COLOR = _ACCENT
 _ENTRY_COLORS = {
     "CISD": "#ec4899",
     "ORDER_BLOCK": "#3b82f6",
     "BREAKER_BLOCK": "#f97316",
     "GOLDEN_RATIO": "#eab308",
     "FVG": "#14b8a6",
-    "NEXT_CANDLE_OPEN": "#3b82f6",
+    "NEXT_CANDLE_OPEN": _ENTRY,
 }
+
+_BADGE_BY_STATUS = {
+    "TARGET_HIT": ("WIN", _UP),
+    "STOP_HIT": ("LOSS", _DOWN),
+    "NO_SETUP": ("NO SETUP", _TEXT_MUTED),
+    "OPEN": ("OPEN", _ACCENT),
+    "AWAITING_ENTRY": ("WATCHING", _ACCENT),
+    "EXPIRED": ("EXPIRED", _TEXT_MUTED),
+}
+
+
+def _badge_for(result: TradeResult) -> tuple[str, str]:
+    """(label, color) shown as a small pill top-right - lets a viewer read
+    win/loss at a glance without parsing numbers, e.g. on a social post."""
+    status = result.status.value
+    if status == "MANUAL_EXIT":
+        pnl = result.pnl_points
+        if pnl is None:
+            return "CLOSED", _TEXT_MUTED
+        if pnl > 0:
+            return "WIN", _UP
+        if pnl < 0:
+            return "LOSS", _DOWN
+        return "FLAT", _TEXT_MUTED
+    return _BADGE_BY_STATUS.get(status, (status.replace("_", " "), _TEXT_MUTED))
+
+
+def _chart_style():
+    mc = mpf.make_marketcolors(
+        up=_UP, down=_DOWN,
+        edge={"up": _UP, "down": _DOWN},
+        wick={"up": _UP, "down": _DOWN},
+        volume="in",
+    )
+    return mpf.make_mpf_style(
+        marketcolors=mc,
+        facecolor=_PANEL,
+        figcolor=_BG,
+        edgecolor=_GRID,
+        gridcolor=_GRID,
+        gridstyle=":",
+        rc={
+            "font.family": "sans-serif",
+            "font.sans-serif": ["Segoe UI", "Arial", "DejaVu Sans"],
+            "axes.edgecolor": _GRID,
+            "axes.labelcolor": _TEXT_MUTED,
+            "xtick.color": _TEXT_MUTED,
+            "ytick.color": _TEXT_MUTED,
+            "text.color": _TEXT,
+            "axes.grid": True,
+            "grid.linewidth": 0.5,
+            "grid.alpha": 0.5,
+        },
+    )
 
 
 def _nearest_pos(index: pd.DatetimeIndex, ts: dt.datetime) -> int | None:
@@ -38,13 +112,150 @@ def _nearest_pos(index: pd.DatetimeIndex, ts: dt.datetime) -> int | None:
     return int(pos) if pos != -1 else None
 
 
+_HEADER_TOP = 0.80  # fraction of figure height reserved for text, above the candle axes
+
+
+def _reserve_header_band(fig) -> None:
+    """Carves out a dedicated text band at the top of the figure (candles
+    never drawn above `_HEADER_TOP`) so header/legend text never has to
+    compete with price action for space - independent of how tall the
+    candle range happens to be on a given day."""
+    fig.subplots_adjust(top=_HEADER_TOP)
+
+
+def _annotate_header(fig, ax, result: TradeResult, subtitle: str) -> None:
+    """Brand wordmark + headline + status badge + PnL callout, drawn as
+    figure-level text (all within the reserved header band) so it's fully
+    styleable (mplfinance's own `title=` kwarg has no such control)."""
+    fig.text(0.012, 0.965, "10:30 CANDLE STRATEGY", fontsize=8.5, fontweight="bold",
+              color=_ACCENT, ha="left", va="top", family="sans-serif")
+    fig.text(0.012, 0.925, subtitle, fontsize=11.5, fontweight="bold",
+              color=_TEXT, ha="left", va="top", family="sans-serif")
+
+    badge_label, badge_color = _badge_for(result)
+    fig.text(0.988, 0.965, badge_label, fontsize=9.5, fontweight="bold",
+             color=_BG, ha="right", va="top",
+             bbox=dict(boxstyle="round,pad=0.35", fc=badge_color, ec="none"), zorder=6)
+
+    pnl = result.pnl_points
+    if pnl is not None:
+        pnl_color = _UP if pnl > 0 else (_DOWN if pnl < 0 else _TEXT_MUTED)
+        fig.text(0.988, 0.925, f"{pnl:+.1f} pts", fontsize=12, fontweight="bold",
+                 color=pnl_color, ha="right", va="top", zorder=6)
+
+    fig.text(0.988, 0.015, "10:30 Candle · nifty-strategy dashboard", fontsize=6.5,
+              color=_TEXT_MUTED, ha="right", va="bottom", alpha=0.65, family="sans-serif")
+
+
+def _annotate_levels(fig, ax, result: TradeResult) -> None:
+    """Draws the SWING/TP/ENTRY/SL horizontal lines at their true price on
+    the chart, plus one compact caption line in the header band spelling
+    out their values - a tight 10/20pt SL/TP on a ~24,000 NIFTY chart
+    routinely puts those levels within a few pixels of each other, so
+    price-anchored labels would overlap; a fixed caption in the header
+    (outside the candle area entirely) is always readable regardless of how
+    close the levels sit."""
+    entry, risk = result.entry, result.risk
+    structure = result.structure
+
+    items: list[tuple[str, float, str]] = []
+    if structure is not None:
+        items.append((f"Swing {structure.broken_swing.kind}", structure.broken_swing.price, _SWING))
+    if entry is not None and risk is not None:
+        items.extend([
+            ("Entry", entry.entry_price, _ENTRY),
+            ("SL", risk.stop_loss, _SL),
+            ("TP", risk.take_profit, _TP),
+        ])
+    if not items:
+        return
+
+    for _, price, color in items:
+        style = ":" if color == _SWING else "--"
+        alpha = 0.55 if color == _SWING else 0.85
+        ax.axhline(y=price, color=color, linestyle=style, linewidth=1, alpha=alpha, zorder=2)
+
+    caption = "    ".join(f"{label} {price:,.1f}" for label, price, _ in items)
+    fig.text(0.012, 0.895, caption, fontsize=8.5, fontweight="600",
+              color=_TEXT_MUTED, ha="left", va="top", family="sans-serif")
+
+
+def _annotate_structure(ax, y_top: float, y_span: float, plot_candles: pd.DataFrame, result: TradeResult) -> None:
+    structure = result.structure
+    if structure is None:
+        return
+    pos = _nearest_pos(plot_candles.index, structure.ts)
+    if pos is None:
+        return
+    ax.axvline(x=pos, color=_STRUCTURE_COLOR, linestyle=":", linewidth=1.3, zorder=1, ymax=0.95)
+    label = structure.signal_label.upper()
+    if structure.smt_divergence:
+        label += " +SMT"
+    ax.annotate(
+        label, xy=(pos, y_top + y_span * 0.075), xycoords="data",
+        fontsize=7.5, color=_BG, fontweight="bold", ha="center", va="center",
+        bbox=dict(boxstyle="round,pad=0.3", fc=_STRUCTURE_COLOR, ec="none"), zorder=5,
+    )
+
+
+def _annotate_entry_marker(ax, plot_candles: pd.DataFrame, result: TradeResult, y_span: float) -> None:
+    entry = result.entry
+    if entry is None:
+        return
+    entry_color = _ENTRY_COLORS.get(entry.entry_type.value, _ENTRY)
+    if entry.zone_high is not None and entry.zone_low is not None:
+        ax.axhspan(entry.zone_low, entry.zone_high, color=entry_color, alpha=0.14, zorder=0)
+    entry_pos = _nearest_pos(plot_candles.index, entry.entry_time)
+    if entry_pos is None:
+        return
+
+    # A single triangle marker just outside the entry candle's own range
+    # (below its low for a BUY, above its high for a SELL) - sitting it
+    # exactly at the entry price would bury it inside the candle body,
+    # since NEXT_CANDLE_OPEN's entry price IS that candle's open.
+    candle = plot_candles.iloc[entry_pos]
+    margin = y_span * 0.025
+    is_buy = result.direction is Direction.BUY
+    marker_y = float(candle["Low"]) - margin if is_buy else float(candle["High"]) + margin
+    marker = "^" if is_buy else "v"
+    ax.plot(
+        entry_pos, marker_y, marker=marker, markersize=9,
+        markerfacecolor=entry_color, markeredgecolor=_BG, markeredgewidth=1,
+        clip_on=True, zorder=5,
+    )
+    # NEXT_CANDLE_OPEN is this strategy's only entry type - the marker alone
+    # is enough for it; other entry types (unused here, kept for schema
+    # parity with the sibling projects) still get their name spelled out.
+    if entry.entry_type.value != "NEXT_CANDLE_OPEN":
+        ax.annotate(
+            entry.entry_type.value,
+            xy=(entry_pos, marker_y),
+            xytext=(0, -14 if is_buy else 14), textcoords="offset points",
+            fontsize=7.5, color=entry_color, fontweight="bold", ha="center", zorder=5,
+        )
+
+
+def _finalize_axes(ax, plot_candles: pd.DataFrame, result: TradeResult) -> tuple[float, float, float]:
+    x_last = len(plot_candles) - 1
+    has_risk = result.entry is not None and result.risk is not None
+    y_top = max([plot_candles["High"].max()] + ([result.risk.take_profit] if has_risk else []))
+    y_bottom = min([plot_candles["Low"].min()] + ([result.risk.stop_loss] if has_risk else []))
+    y_span = max(y_top - y_bottom, 1.0)
+    ax.set_ylim(y_bottom - y_span * 0.12, y_top + y_span * 0.22)
+    for spine in ax.spines.values():
+        spine.set_edgecolor(_GRID)
+        spine.set_linewidth(0.8)
+    ax.tick_params(labelsize=8)
+    return x_last, y_top, y_span
+
+
 def render_trade_snapshot(result: TradeResult, candles_fine: pd.DataFrame) -> str | None:
     """Renders candles from the swing break through the exit (padded a bit
     either side) with entry/SL/TP marked, saves a PNG, returns its path.
 
     Also annotates the setup itself so the snapshot is self-explanatory
     without cross-referencing the trade log row:
-      - a horizontal line at the fractal swing high/low that was broken
+      - a horizontal line at the pre-cutoff fractal swing high/low that was broken
       - a vertical marker at the break itself (labelled Swing Break High/Low)
       - an arrow at the entry (open of the next candle after the break)
     """
@@ -65,80 +276,23 @@ def render_trade_snapshot(result: TradeResult, candles_fine: pd.DataFrame) -> st
     if plot_candles.empty:
         plot_candles = candles_fine
 
-    hlines = dict(
-        hlines=[result.entry.entry_price, result.risk.stop_loss, result.risk.take_profit],
-        colors=["#3b82f6", "#ef4444", "#22c55e"],
-        linestyle="--",
-        linewidths=1,
-    )
-
     filename = f"{result.trade_date.isoformat()}_{result.symbol.strip('^')}_{result.entry.entry_time.strftime('%H%M')}.png"
     out_path = settings.snapshots_dir / filename
 
     fig, axlist = mpf.plot(
-        plot_candles,
-        type="candle",
-        style="yahoo",
-        hlines=hlines,
-        title=f"{result.trade_date.strftime('%d %b %Y')} · {result.symbol_label} {result.direction.value} - {result.entry.entry_type.value}",
-        returnfig=True,
-        figsize=(7.4, 3.8),
+        plot_candles, type="candle", style=_chart_style(), returnfig=True, figsize=(8.2, 4.8),
     )
     ax = axlist[0]
-    x_last = len(plot_candles) - 1
-    y_top = max(plot_candles["High"].max(), result.risk.take_profit)
-    y_bottom = min(plot_candles["Low"].min(), result.risk.stop_loss)
-    y_span = max(y_top - y_bottom, 1.0)
-    ax.set_ylim(y_bottom - y_span * 0.12, y_top + y_span * 0.14)
+    _reserve_header_band(fig)
+    x_last, y_top, y_span = _finalize_axes(ax, plot_candles, result)
 
-    # 0) Label the entry / SL / TP hlines at the right edge (colors match hlines above)
-    for price, label, color in (
-        (result.entry.entry_price, "Entry", "#3b82f6"),
-        (result.risk.stop_loss, "SL", "#ef4444"),
-        (result.risk.take_profit, "TP", "#22c55e"),
-    ):
-        ax.text(x_last, price, f" {label}", fontsize=7, color=color, fontweight="bold", va="center", ha="left")
+    subtitle = f"{result.symbol_label} · {result.trade_date.strftime('%d %b %Y')} · {result.direction.value if result.direction else '-'} · {result.entry.entry_type.value}"
+    _annotate_header(fig, ax, result, subtitle)
+    _annotate_levels(fig, ax, result)
+    _annotate_structure(ax, y_top, y_span, plot_candles, result)
+    _annotate_entry_marker(ax, plot_candles, result, y_span)
 
-    # 1) The swing level that was broken (this project's "liquidity" - the
-    #    fractal swing high/low the breaking candle closed beyond)
-    if result.structure is not None:
-        ax.axhline(y=result.structure.broken_swing.price, color="#94a3b8", linestyle="-", linewidth=1.1, alpha=0.6, zorder=0)
-        ax.text(
-            0, result.structure.broken_swing.price, f" swing {result.structure.broken_swing.kind} ",
-            fontsize=7, color="#64748b", va="bottom", ha="left",
-        )
-
-    # 2) Swing-break marker (labelled near the top of the chart
-    #    so it never collides with the candles or the entry/SL/TP lines below it)
-    if result.structure is not None:
-        pos = _nearest_pos(plot_candles.index, result.structure.ts)
-        if pos is not None:
-            color = _STRUCTURE_COLORS.get(result.structure.structure_type.value, "#a855f7")
-            ax.axvline(x=pos, color=color, linestyle=":", linewidth=1.3, zorder=1, ymax=0.95)
-            label = result.structure.signal_label
-            if result.structure.smt_divergence:
-                label += " +SMT"
-            ax.annotate(
-                label,
-                xy=(pos, y_top + y_span * 0.14), xycoords="data",
-                fontsize=7.5, color=color, fontweight="bold", ha="center", va="top",
-            )
-
-    # 3) Entry concept zone (CISD / Order Block / Breaker Block / Golden Ratio)
-    entry_pos = _nearest_pos(plot_candles.index, result.entry.entry_time)
-    entry_color = _ENTRY_COLORS.get(result.entry.entry_type.value, "#3b82f6")
-    if result.entry.zone_high is not None and result.entry.zone_low is not None:
-        ax.axhspan(result.entry.zone_low, result.entry.zone_high, color=entry_color, alpha=0.18, zorder=0)
-    if entry_pos is not None:
-        ax.annotate(
-            result.entry.entry_type.value,
-            xy=(entry_pos, result.entry.entry_price),
-            xytext=(0, -20), textcoords="offset points",
-            fontsize=7.5, color=entry_color, fontweight="bold", ha="center",
-            arrowprops=dict(arrowstyle="->", color=entry_color, linewidth=1),
-        )
-
-    fig.savefig(out_path, dpi=115, bbox_inches="tight")
+    fig.savefig(out_path, dpi=160, facecolor=_BG, bbox_inches="tight")
     plt.close(fig)
 
     return str(out_path)
@@ -148,96 +302,31 @@ def render_live_chart(result: TradeResult, candles_fine: pd.DataFrame) -> bytes 
     """Live counterpart to render_trade_snapshot for the overview page's
     "Today's Live Chart" card: renders the FULL session so far (not a
     cropped window) and doesn't require a resolved (or even found) trade -
-    shows just the liquidity band on a NO_SETUP day, adds the structure
-    marker once structure resolves, and the entry zone/SL/TP once an entry
-    is found. Returns PNG bytes directly (not saved to disk - this is
-    regenerated fresh on every request, not archived per-trade)."""
+    shows just the pre-cutoff swing band on a NO_SETUP day, adds the
+    structure marker once structure resolves, and the entry zone/SL/TP once
+    an entry is found. Returns PNG bytes directly (not saved to disk - this
+    is regenerated fresh on every request, not archived per-trade)."""
     if candles_fine.empty:
         return None
 
-    has_risk = result.entry is not None and result.risk is not None
-    hlines = None
-    if has_risk:
-        hlines = dict(
-            hlines=[result.entry.entry_price, result.risk.stop_loss, result.risk.take_profit],
-            colors=["#3b82f6", "#ef4444", "#22c55e"],
-            linestyle="--",
-            linewidths=1,
-        )
-
-    title = f"{result.trade_date.strftime('%d %b %Y')} · {result.symbol_label}"
-    if result.direction is not None:
-        title += f" {result.direction.value}"
-    if result.entry is not None:
-        title += f" - {result.entry.entry_type.value}"
-    title += f" ({result.status.value})"
-
-    plot_kwargs = dict(
-        type="candle",
-        style="yahoo",
-        title=title,
-        returnfig=True,
-        figsize=(9.6, 4.4),
+    fig, axlist = mpf.plot(
+        candles_fine, type="candle", style=_chart_style(), returnfig=True, figsize=(10.2, 5.2),
     )
-    # mplfinance's hlines validator rejects an explicit None outright (it
-    # only accepts a real dict/list or the kwarg being absent entirely) - on
-    # any day with no entry yet (the common case, e.g. NO_SETUP) `hlines` is
-    # None here, so it must be omitted rather than passed through. Passing
-    # it unconditionally crashed every no-entry render, which the route's
-    # broad except then swallowed into a silent "no chart data" empty state.
-    if hlines is not None:
-        plot_kwargs["hlines"] = hlines
-
-    fig, axlist = mpf.plot(candles_fine, **plot_kwargs)
     ax = axlist[0]
-    x_last = len(candles_fine) - 1
-    y_top = max([candles_fine["High"].max()] + ([result.risk.take_profit] if has_risk else []))
-    y_bottom = min([candles_fine["Low"].min()] + ([result.risk.stop_loss] if has_risk else []))
-    y_span = max(y_top - y_bottom, 1.0)
-    ax.set_ylim(y_bottom - y_span * 0.12, y_top + y_span * 0.14)
+    _reserve_header_band(fig)
+    x_last, y_top, y_span = _finalize_axes(ax, candles_fine, result)
 
-    if has_risk:
-        for price, label, color in (
-            (result.entry.entry_price, "Entry", "#3b82f6"),
-            (result.risk.stop_loss, "SL", "#ef4444"),
-            (result.risk.take_profit, "TP", "#22c55e"),
-        ):
-            ax.text(x_last, price, f" {label}", fontsize=7, color=color, fontweight="bold", va="center", ha="left")
-
-    if result.structure is not None:
-        ax.axhline(y=result.structure.broken_swing.price, color="#94a3b8", linestyle="-", linewidth=1.1, alpha=0.6, zorder=0)
-        ax.text(
-            0, result.structure.broken_swing.price, f" swing {result.structure.broken_swing.kind} ",
-            fontsize=7, color="#64748b", va="bottom", ha="left",
-        )
-        pos = _nearest_pos(candles_fine.index, result.structure.ts)
-        if pos is not None:
-            color = _STRUCTURE_COLORS.get(result.structure.structure_type.value, "#a855f7")
-            ax.axvline(x=pos, color=color, linestyle=":", linewidth=1.3, zorder=1, ymax=0.95)
-            label = result.structure.signal_label
-            if result.structure.smt_divergence:
-                label += " +SMT"
-            ax.annotate(
-                label,
-                xy=(pos, y_top + y_span * 0.14), xycoords="data",
-                fontsize=7.5, color=color, fontweight="bold", ha="center", va="top",
-            )
-
+    subtitle = f"{result.symbol_label} · {result.trade_date.strftime('%d %b %Y')}"
+    if result.direction is not None:
+        subtitle += f" · {result.direction.value}"
     if result.entry is not None:
-        entry_pos = _nearest_pos(candles_fine.index, result.entry.entry_time)
-        entry_color = _ENTRY_COLORS.get(result.entry.entry_type.value, "#3b82f6")
-        if result.entry.zone_high is not None and result.entry.zone_low is not None:
-            ax.axhspan(result.entry.zone_low, result.entry.zone_high, color=entry_color, alpha=0.18, zorder=0)
-        if entry_pos is not None:
-            ax.annotate(
-                result.entry.entry_type.value,
-                xy=(entry_pos, result.entry.entry_price),
-                xytext=(0, -20), textcoords="offset points",
-                fontsize=7.5, color=entry_color, fontweight="bold", ha="center",
-                arrowprops=dict(arrowstyle="->", color=entry_color, linewidth=1),
-            )
+        subtitle += f" · {result.entry.entry_type.value}"
+    _annotate_header(fig, ax, result, subtitle)
+    _annotate_levels(fig, ax, result)
+    _annotate_structure(ax, y_top, y_span, candles_fine, result)
+    _annotate_entry_marker(ax, candles_fine, result, y_span)
 
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=115, bbox_inches="tight")
+    fig.savefig(buf, format="png", dpi=150, facecolor=_BG, bbox_inches="tight")
     plt.close(fig)
     return buf.getvalue()

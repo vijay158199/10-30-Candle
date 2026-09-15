@@ -77,6 +77,12 @@ class Trade(Base):
     setup_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     smt_divergence: Mapped[bool] = mapped_column(Boolean, default=False)
 
+    # --- Trader's journal fields (Journal page) - self-graded, never set by
+    # the engine itself, purely for the trader's own post-trade review. -----
+    journal_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    journal_rating: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 1-5, "how well did I execute this"
+    journal_tags: Mapped[str | None] = mapped_column(String(255), nullable=True)  # comma-separated, e.g. "followed-plan,fomo"
+
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
 
 
@@ -171,6 +177,34 @@ class LiveHeartbeat(Base):
     last_poll_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
     status: Mapped[str] = mapped_column(String(32), default="RUNNING")  # RUNNING|STOPPED|ERROR
     detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class BrokerAccount(Base):
+    """One row per connected broker account (opt-in - the app runs entirely
+    on signals/Yahoo Finance data without any row here). Credentials and the
+    access token are stored ENCRYPTED (see app.broker.crypto, keyed by
+    config.get_broker_encryption_key()) - never plaintext in the DB. This is
+    single-user, so `broker` is unique: connecting again for the same broker
+    replaces the existing row rather than creating a second one."""
+
+    __tablename__ = "broker_accounts"
+    __table_args__ = (UniqueConstraint("broker", name="uq_broker_account_broker"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    broker: Mapped[str] = mapped_column(String(32))  # "groww" | "angel_one" | "upstox" | "dhan"
+    label: Mapped[str | None] = mapped_column(String(64), nullable=True)  # user's own nickname for the account
+    auth_method: Mapped[str] = mapped_column(String(24))  # "api_key_secret" | "totp"
+
+    encrypted_credentials: Mapped[str] = mapped_column(Text)  # Fernet-encrypted JSON blob (api_key/secret/totp_secret)
+    encrypted_access_token: Mapped[str | None] = mapped_column(Text, nullable=True)
+    token_generated_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+
+    status: Mapped[str] = mapped_column(String(16), default="CONNECTED")  # CONNECTED | ERROR
+    last_checked_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow, onupdate=dt.datetime.utcnow)
 
 
 class LiveControl(Base):

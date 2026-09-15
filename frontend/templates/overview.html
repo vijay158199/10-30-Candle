@@ -76,7 +76,7 @@
           <div class="pipeline-detail">Broke at {{ pipeline.structure.time.strftime('%H:%M') if pipeline.structure.time else "-" }}</div>
         {% else %}
           <div class="pipeline-value">Not yet</div>
-          <div class="pipeline-detail">Watching for a 5m close beyond the tracked swing high/low, at/after {{ settings.swing_start_time }}</div>
+          <div class="pipeline-detail">Watching for a 5m close beyond the swing high/low tracked before {{ settings.swing_start_time }}</div>
         {% endif %}
       </div>
       <div class="pipeline-arrow">&rarr;</div>
@@ -154,8 +154,8 @@
   </div>
   <div class="card-body">
     <div class="tile-sub">
-      Fixed 5-minute candles, watching for a swing break at/after {{ settings.swing_start_time }} IST every session -
-      nothing to configure here.
+      Fixed 5-minute candles: swing high/low tracked before {{ settings.swing_start_time }} IST, breakout watched for
+      from {{ settings.swing_start_time }} onward - nothing to configure here.
     </div>
   </div>
 </div>
