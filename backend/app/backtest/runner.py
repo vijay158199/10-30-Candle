@@ -74,7 +74,7 @@ def run_backtest(
 
                 if generate_snapshots and result.entry is not None:
                     try:
-                        row["snapshot_path"] = charts.render_trade_snapshot(result, sd_primary.fine)
+                        row["snapshot_path"] = charts.render_trade_snapshot(result, sd_primary.fine, run_tag=f"bt{run_id}")
                     except Exception as exc:  # noqa: BLE001 - a failed chart shouldn't fail the backtest
                         log_event("WARNING", "backtest.runner", f"Snapshot render failed for {day}: {exc}")
 

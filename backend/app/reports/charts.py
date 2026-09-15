@@ -249,7 +249,7 @@ def _finalize_axes(ax, plot_candles: pd.DataFrame, result: TradeResult) -> tuple
     return x_last, y_top, y_span
 
 
-def render_trade_snapshot(result: TradeResult, candles_fine: pd.DataFrame) -> str | None:
+def render_trade_snapshot(result: TradeResult, candles_fine: pd.DataFrame, run_tag: str = "live") -> str | None:
     """Renders candles from the swing break through the exit (padded a bit
     either side) with entry/SL/TP marked, saves a PNG, returns its path.
 
@@ -258,7 +258,16 @@ def render_trade_snapshot(result: TradeResult, candles_fine: pd.DataFrame) -> st
       - a horizontal line at the pre-cutoff fractal swing high/low that was broken
       - a vertical marker at the break itself (labelled Swing Break High/Low)
       - an arrow at the entry (open of the next candle after the break)
-    """
+
+    `run_tag` MUST disambiguate the caller (e.g. f"bt{run_id}" for a
+    backtest run, "live" for the live monitor) - the filename used to be
+    keyed on trade_date+symbol+entry_time alone, so two backtest runs over
+    the same date with different SL/TP risk profiles (same entry time,
+    different exit) silently overwrote each other's PNG on disk: an OLDER
+    run's Trade row kept its own correctly-computed pnl_points, but its
+    snapshot_path pointed at a file a LATER run had since overwritten with a
+    different SL/TP drawn on it - the table said one pnl, the image showed
+    another. Including run_tag gives every run's snapshots their own file."""
     if result.entry is None or result.risk is None or candles_fine.empty:
         return None
 
@@ -276,7 +285,7 @@ def render_trade_snapshot(result: TradeResult, candles_fine: pd.DataFrame) -> st
     if plot_candles.empty:
         plot_candles = candles_fine
 
-    filename = f"{result.trade_date.isoformat()}_{result.symbol.strip('^')}_{result.entry.entry_time.strftime('%H%M')}.png"
+    filename = f"{result.trade_date.isoformat()}_{result.symbol.strip('^')}_{result.entry.entry_time.strftime('%H%M')}_{run_tag}.png"
     out_path = settings.snapshots_dir / filename
 
     fig, axlist = mpf.plot(
